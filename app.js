@@ -9,9 +9,12 @@ const taskMessage = document.querySelector('#task-message');
 const tasksElement = document.querySelector('#tasks');
 const taskCount = document.querySelector('#task-count');
 const taskSort = document.querySelector('#task-sort');
+const taskCategoryFilter = document.querySelector('#task-category-filter');
 let currentUser = null;
 let supabaseClient = null;
 let loadedTasks = [];
+let calendarDate = new Date();
+const editDialog = document.querySelector('#edit-dialog');
 
 function isPlaceholder(value) {
   return !value || value.includes('YOUR-PROJECT') || value.includes('YOUR_SUPABASE');
@@ -91,9 +94,50 @@ function renderTasks(tasks) {
   tasksElement.innerHTML = tasks.map((task) => `
     <article class="task ${task.is_completed ? 'completed' : ''}" data-task-id="${task.id}">
       <input class="task-check" type="checkbox" ${task.is_completed ? 'checked' : ''} aria-label="Mark ${escapeHtml(task.title)} as complete" />
-      <div><p class="task-title">${escapeHtml(task.title)}</p>${task.description ? `<p class="task-description">${escapeHtml(task.description)}</p>` : ''}<div class="task-meta"><span class="task-badge priority-${task.priority || 'medium'}">${task.priority || 'medium'} priority</span>${task.due_date ? `<span class="task-badge due-date">Due ${formatDueDate(task.due_date)}</span>` : ''}</div></div>
+      <div><p class="task-title">${escapeHtml(task.title)}</p>${task.description ? `<p class="task-description">${escapeHtml(task.description)}</p>` : ''}<div class="task-meta">${task.category ? `<span class="task-badge category">${escapeHtml(task.category)}</span>` : ''}<span class="task-badge priority-${task.priority || 'medium'}">${task.priority || 'medium'} priority</span>${task.due_date ? `<span class="task-badge due-date">Due ${formatDueDate(task.due_date)}</span>` : ''}</div></div>
       <div class="task-actions"><button class="icon-button edit-task" type="button">Edit</button><button class="icon-button delete-task" type="button">Delete</button></div>
     </article>`).join('');
+}
+
+function visibleTasks() {
+  if (taskCategoryFilter.value === 'all') return loadedTasks;
+  return loadedTasks.filter((task) => task.category === taskCategoryFilter.value);
+}
+
+function renderCategoryFilter() {
+  const selectedCategory = taskCategoryFilter.value;
+  const categories = [...new Set(loadedTasks.map((task) => task.category?.trim()).filter(Boolean))].sort((first, second) => first.localeCompare(second));
+  taskCategoryFilter.innerHTML = `<option value="all">All</option>${categories.map((category) => `<option value="${escapeHtml(category)}">${escapeHtml(category)}</option>`).join('')}`;
+  taskCategoryFilter.value = categories.includes(selectedCategory) ? selectedCategory : 'all';
+}
+
+function toDateKey(date) {
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${date.getFullYear()}-${month}-${day}`;
+}
+
+function renderCalendar() {
+  const monthLabel = document.querySelector('#calendar-month');
+  const calendarElement = document.querySelector('#calendar');
+  const year = calendarDate.getFullYear();
+  const month = calendarDate.getMonth();
+  const firstDay = new Date(year, month, 1);
+  const startDate = new Date(year, month, 1 - firstDay.getDay());
+  const todayKey = toDateKey(new Date());
+  monthLabel.textContent = calendarDate.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+  calendarElement.innerHTML = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day) => `<span class="calendar-weekday">${day}</span>`).join('');
+
+  for (let dayIndex = 0; dayIndex < 42; dayIndex += 1) {
+    const date = new Date(startDate);
+    date.setDate(startDate.getDate() + dayIndex);
+    const dateKey = toDateKey(date);
+    const dayTasks = loadedTasks.filter((task) => task.due_date === dateKey);
+    const dayElement = document.createElement('div');
+    dayElement.className = `calendar-day ${date.getMonth() !== month ? 'other-month' : ''} ${dateKey === todayKey ? 'today' : ''}`.trim();
+    dayElement.innerHTML = `<span class="calendar-day-number">${date.getDate()}</span>${dayTasks.map((task) => `<button class="calendar-task priority-${task.priority || 'medium'}" type="button" data-task-id="${escapeHtml(task.id)}" title="Edit ${escapeHtml(task.title)}">${escapeHtml(task.title)}</button>`).join('')}`;
+    calendarElement.appendChild(dayElement);
+  }
 }
 
 function formatDueDate(value) {
@@ -121,7 +165,19 @@ async function fetchTasks() {
   if (error) { console.error('[Supabase fetch tasks error]', error); showMessage(taskMessage, describeAuthError(error), 'error'); return; }
   clearMessage(taskMessage);
   loadedTasks = data || [];
-  renderTasks(sortTasks(loadedTasks));
+  renderCategoryFilter();
+  renderTasks(sortTasks(visibleTasks()));
+  renderCalendar();
+}
+
+function openEditDialog(task) {
+  document.querySelector('#edit-task-title').value = task.title || '';
+  document.querySelector('#edit-task-description').value = task.description || '';
+  document.querySelector('#edit-task-category').value = task.category || '';
+  document.querySelector('#edit-task-priority').value = task.priority || 'medium';
+  document.querySelector('#edit-task-due-date').value = task.due_date || '';
+  editDialog.dataset.taskId = task.id;
+  editDialog.showModal();
 }
 
 async function signIn(event) {
@@ -159,17 +215,19 @@ document.querySelector('#task-form').addEventListener('submit', async (event) =>
   clearMessage(taskMessage);
   const titleInput = document.querySelector('#task-title');
   const descriptionInput = document.querySelector('#task-description');
+  const categoryInput = document.querySelector('#task-category');
   const priorityInput = document.querySelector('#task-priority');
   const dueDateInput = document.querySelector('#task-due-date');
   try {
-    const { error } = await supabaseClient.from('tasks').insert({ user_id: currentUser.id, title: titleInput.value.trim(), description: descriptionInput.value.trim(), priority: priorityInput.value, due_date: dueDateInput.value || null, is_completed: false });
+    const { error } = await supabaseClient.from('tasks').insert({ user_id: currentUser.id, title: titleInput.value.trim(), description: descriptionInput.value.trim(), category: categoryInput.value.trim() || null, priority: priorityInput.value, due_date: dueDateInput.value || null, is_completed: false });
     if (error) { console.error('[Supabase create task error]', error); showMessage(taskMessage, error.message, 'error'); return; }
     event.target.reset();
     await fetchTasks();
   } catch (error) { console.error('[Supabase create task exception]', error); showMessage(taskMessage, describeAuthError(error), 'error'); }
 });
 
-taskSort.addEventListener('change', () => renderTasks(sortTasks(loadedTasks)));
+taskSort.addEventListener('change', () => renderTasks(sortTasks(visibleTasks())));
+taskCategoryFilter.addEventListener('change', () => renderTasks(sortTasks(visibleTasks())));
 
 tasksElement.addEventListener('click', async (event) => {
   const taskElement = event.target.closest('.task');
@@ -182,13 +240,47 @@ tasksElement.addEventListener('click', async (event) => {
       await fetchTasks();
     }
     if (event.target.classList.contains('edit-task')) {
-      const title = window.prompt('Edit task title:', taskElement.querySelector('.task-title').textContent);
-      if (title === null || !title.trim()) return;
-      const { error } = await supabaseClient.from('tasks').update({ title: title.trim() }).eq('id', taskId).eq('user_id', currentUser.id);
-      if (error) throw error;
-      await fetchTasks();
+      const task = loadedTasks.find((item) => String(item.id) === String(taskId));
+      if (task) openEditDialog(task);
     }
   } catch (error) { console.error('[Supabase task mutation error]', error); showMessage(taskMessage, describeAuthError(error), 'error'); }
+});
+
+document.querySelector('#calendar').addEventListener('click', (event) => {
+  const taskButton = event.target.closest('.calendar-task');
+  if (!taskButton) return;
+  const task = loadedTasks.find((item) => String(item.id) === String(taskButton.dataset.taskId));
+  if (task) openEditDialog(task);
+});
+
+document.querySelector('#edit-task-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  clearMessage(taskMessage);
+  const taskId = editDialog.dataset.taskId;
+  const updates = {
+    title: document.querySelector('#edit-task-title').value.trim(),
+    description: document.querySelector('#edit-task-description').value.trim(),
+    category: document.querySelector('#edit-task-category').value.trim() || null,
+    priority: document.querySelector('#edit-task-priority').value,
+    due_date: document.querySelector('#edit-task-due-date').value || null
+  };
+  try {
+    const { error } = await supabaseClient.from('tasks').update(updates).eq('id', taskId).eq('user_id', currentUser.id);
+    if (error) throw error;
+    editDialog.close();
+    await fetchTasks();
+  } catch (error) { console.error('[Supabase task edit error]', error); showMessage(taskMessage, describeAuthError(error), 'error'); }
+});
+
+document.querySelector('#close-edit-dialog').addEventListener('click', () => editDialog.close());
+document.querySelector('#cancel-edit').addEventListener('click', () => editDialog.close());
+document.querySelector('#previous-month').addEventListener('click', () => {
+  calendarDate = new Date(calendarDate.getFullYear(), calendarDate.getMonth() - 1, 1);
+  renderCalendar();
+});
+document.querySelector('#next-month').addEventListener('click', () => {
+  calendarDate = new Date(calendarDate.getFullYear(), calendarDate.getMonth() + 1, 1);
+  renderCalendar();
 });
 
 tasksElement.addEventListener('change', async (event) => {
